@@ -12,6 +12,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Host tests (tree feller logic)
+        run: |
+          echo "Compiling host-side tree feller simulation..."
+          g++ -std=gnu++20 -O1 -DFELLER_TEST_HOOKS -Isrc -Itests/stubs \
+              tests/tree_feller_sim.cpp src/tree_feller.cpp \
+              tests/stubs/pl/memory/Hook.cpp tests/stubs/log_impl.cpp \
+              -pthread -o /tmp/feller_sim
+          /tmp/feller_sim
+
       - name: Setup NDK
         id: ndk
         uses: nttld/setup-ndk@v1
