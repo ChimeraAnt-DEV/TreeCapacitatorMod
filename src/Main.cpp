@@ -1,97 +1,225 @@
-#include <jni.h>
-#include <dlfcn.h>
-#include <cstdint>
-#include <cstdlib>
-#include <unistd.h>
-#include <sys/mman.h>
-#include <android/log.h>
+// TreeCapacitator — LeviLauncher (LeviLaunchroid) native mod entry point.
+//
+// Lifecycle integration follows the preloader SDK contract:
+//   * the launcher dlopens this library and calls PLGetModRegistration()
+//   * load()  -> engine is created, optional game hooks are attempted
+//   * enable()-> simulation thread starts
+//   * disable/unload -> clean shutdown
+//
+// All pl::* symbols referenced here are provided at runtime by the
+// libpreloader.so injected by LeviLaunchroid (the mod ships with DT_NEEDED
+// libpreloader.so but does not bundle it).
+
 #include "tree_capacitor.h"
-#include "scanner.h"
+#include "weather_hooks.h"
+#include "hud.h"
+
+#include <jni.h>
+
+#include <pl/Mod.hpp>
+#include <pl/Export.hpp>
+#include <pl/Logger.hpp>
+#include <pl/ModMenu.hpp>
+#include <pl/Input.hpp>
+
+#include <android/log.h>
+
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
+#include <string>
+#include <string_view>
+#include <thread>
 
 #define LOG_TAG "TreeCap"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-static void (*orig_LevelTick)(void*)              = nullptr;
-static void (*orig_SetBlock)(void*, void*, void*) = nullptr;
+// Forward-declared lifecycle helpers (defined at the bottom, after the
+// anonymous-namespace onToggle callbacks that need them).
+namespace {
+void SetEnabledState(bool on);
+}
 
-// Minimal ARM64 inline hook
-static void hook_arm64(void* target, void* hook_func, void** backup) {
-    size_t page_size = sysconf(_SC_PAGESIZE);
-    void* page = (void*)((uintptr_t)target & ~(page_size - 1));
-    mprotect(page, page_size * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+namespace {
 
-    if (backup) {
-        *backup = malloc(16);
-        memcpy(*backup, target, 16);
+constexpr const char* kModuleId = "treecapacitator";
+constexpr const char* kModAuthor = "ChimeraAnt-DEV";
+constexpr const char* kModVersion = "1.0.0";
+
+std::atomic<bool> g_enabled{false};
+std::atomic<bool> g_hooksInstalled{false};
+std::thread g_simThread;
+std::atomic<bool> g_simRunning{false};
+
+// ───────────────────────────────────────────────────────────────────────────
+// Simulation thread. Advances the capacitor grid at 10 Hz and refreshes the
+// HUD overlay a couple of times per second.
+// ───────────────────────────────────────────────────────────────────────────
+void SimLoop() {
+    LOGI("Simulation thread started");
+    treecap::api::SetEnabled(true);
+
+    int frame = 0;
+    while (g_simRunning.load(std::memory_order_relaxed)) {
+        treecap::api::Tick();
+
+        if (++frame % 20 == 0) {
+            const treecap::CapacitorStats stats = treecap::api::Snapshot();
+            LOGI("[TreeCap] nodes=%d charged=%d charge=%ld/%ld pulses=%ld weather=%d%s",
+                 stats.nodeCount, stats.chargedCount, stats.totalCharge,
+                 stats.capacity, stats.pulsesDelivered,
+                 static_cast<int>(stats.weather),
+                 stats.weatherFromGame ? " (game)" : " (simulated)");
+            hud::RenderStats(stats);
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
-
-    uint32_t* code = (uint32_t*)target;
-    int64_t offset = ((int64_t)hook_func - (int64_t)target) >> 12;
-    
-    code[0] = 0x90000010 | ((offset & 0x1FFFFF) << 5); 
-    code[1] = 0x91000210 | ((offset & 0xFFF) << 10);   
-    code[2] = 0xD61F0200;                              
-    code[3] = 0xD503201F;                              
-
-    __builtin___clear_cache((char*)target, (char*)target + 16);
+    LOGI("Simulation thread stopped");
 }
 
-static void Hook_LevelTick(void* level) {
-    // Weather offset is typically around 0x5A8 in Level struct for recent versions
-    // If this crashes, the struct layout has changed.
-    int weatherType = *reinterpret_cast<int*>(
-        reinterpret_cast<uintptr_t>(level) + 0x5A8); 
-    TreeCapacitor::OnTick(level, weatherType >= 1);
-    if (orig_LevelTick) orig_LevelTick(level);
+// ───────────────────────────────────────────────────────────────────────────
+// Mod menu integration
+// ───────────────────────────────────────────────────────────────────────────
+pl::modmenu::ModuleBuilder MakeModuleBuilder() {
+    auto builder = pl::modmenu::ModuleBuilder(kModuleId, "TreeCapacitator")
+                       .description("Tree capacitor network: rain and thunder "
+                                    "charge capacitor roots that release growth "
+                                    "pulses into nearby trees.")
+                       .modId(kModuleId);
+
+    builder.config("rain_rate", "Rain charge rate",
+                   pl::modmenu::ConfigType::SliderInt,
+                   std::to_string(treecap::kRainRate), "0",
+                   std::to_string(treecap::kThunderRate));
+    builder.config("thunder_rate", "Thunder charge rate",
+                   pl::modmenu::ConfigType::SliderInt,
+                   std::to_string(treecap::kThunderRate), "0",
+                   std::to_string(treecap::kThunderRate * 2));
+    builder.config("leak_rate", "Discharge leak",
+                   pl::modmenu::ConfigType::SliderInt,
+                   std::to_string(treecap::kLeakRate), "0", "50");
+
+    builder.onToggle([](std::string_view moduleId, bool enabled) {
+        if (moduleId == kModuleId) {
+            SetEnabledState(enabled);
+        }
+    });
+    builder.onConfigChanged([](std::string_view moduleId, std::string_view key,
+                               std::string_view value) {
+        if (moduleId != kModuleId) return;
+        int v = 0;
+        try {
+            v = std::stoi(std::string(value));
+        } catch (...) {
+            return;
+        }
+        if (key == "rain_rate") treecap::api::SetRainRate(v);
+        else if (key == "thunder_rate") treecap::api::SetThunderRate(v);
+        else if (key == "leak_rate") treecap::api::SetLeakRate(v);
+    });
+
+    return builder;
 }
 
-static void Hook_SetBlock(void* src, void* pos, void* blk) {
-    int blockId = *reinterpret_cast<int*>(
-        reinterpret_cast<uintptr_t>(blk) + 0x08); // Block ID offset
-    int x = *reinterpret_cast<int*>(reinterpret_cast<uintptr_t>(pos) + 0x00);
-    int y = *reinterpret_cast<int*>(reinterpret_cast<uintptr_t>(pos) + 0x04);
-    int z = *reinterpret_cast<int*>(reinterpret_cast<uintptr_t>(pos) + 0x08);
-    TreeCapacitor::OnBlockPlace(blockId, x, y, z);
-    if (orig_SetBlock) orig_SetBlock(src, pos, blk);
-}
-
-extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved) {
-    LOGI("TreeCapacitor loading (MC 1.26.33.1) with Pattern Scanner...");
-
-    auto modInfo = Scanner::GetModuleInfo("libminecraftpe.so");
-    if (modInfo.base == 0) {
-        LOGE("FATAL: Could not find libminecraftpe.so in memory");
-        return JNI_VERSION_1_6;
+// ───────────────────────────────────────────────────────────────────────────
+// Input bridge: toggle the network on/off with a keypress (e.g. a button).
+// ───────────────────────────────────────────────────────────────────────────
+bool OnKeyEvent(const pl::input::KeyEvent& event) {
+    if (!event.isKeyDown || event.keyCode == 0) return false;
+    static const int kDefaultToggleKey = 48; // Android KEYCODE_T
+    if (event.keyCode == kDefaultToggleKey) {
+        SetEnabledState(!g_enabled.load(std::memory_order_relaxed));
+        return true;
     }
-    LOGI("Found libminecraftpe.so at base: 0x%lx", modInfo.base);
+    return false;
+}
 
-    // Pattern for Level::tick (Common ARM64 prologue + specific call)
-    // STP X29, X30, [SP, #-0x30]! ... 
-    const char* tickPattern = "\xFD\x7B\xBF\xA9\xFD\x03\x00\x91\xF3\x03\x00\xAA\xE0\x03\x1F\xAA";
-    const char* tickMask    = "xxxxxxxxxxxxxxxx";
-    
-    uintptr_t tickAddr = Scanner::FindPattern(modInfo.base, modInfo.size, tickPattern, tickMask);
-    if (tickAddr) {
-        LOGI("Found Level::tick at 0x%lx", tickAddr);
-        hook_arm64((void*)tickAddr, (void*)Hook_LevelTick, (void**)&orig_LevelTick);
+} // namespace
+
+// ───────────────────────────────────────────────────────────────────────────
+// Lifecycle: load/enable/disable/unload invoked by the preloader.
+// ───────────────────────────────────────────────────────────────────────────
+namespace {
+
+bool OnLoad(pl::mod::ModContext& ctx) {
+    LOGI("TreeCapacitator v%s loading (author: %s)", kModVersion, kModAuthor);
+
+    if (!MakeModuleBuilder().registerModule()) {
+        LOGE("Failed to register mod menu module; continuing without menu UI");
+    }
+    pl::input::registerKeyCallback(OnKeyEvent);
+
+    treecap::api::Init(256, 0x5EED);
+    treecap::api::SetWeather(treecap::WeatherState::Clear, false);
+    return true;
+}
+
+bool OnEnable(pl::mod::ModContext& ctx) {
+    LOGI("TreeCapacitator enabling");
+    SetEnabledState(true);
+
+    // Hook the real in-game weather. If the current Minecraft build does not
+    // match the shipped signatures, the network runs on its built-in storm
+    // simulator instead — the mod stays fully functional.
+    g_hooksInstalled.store(weatherhooks::Install());
+    if (!g_hooksInstalled.load()) {
+        LOGI("Weather signatures not found — using built-in storm simulator");
+    }
+    return true;
+}
+
+bool OnDisable(pl::mod::ModContext& ctx) {
+    LOGI("TreeCapacitator disabling");
+    SetEnabledState(false);
+    if (g_hooksInstalled.exchange(false)) {
+        weatherhooks::Uninstall();
+        treecap::api::SetWeather(treecap::WeatherState::Clear, false);
+    }
+    return true;
+}
+
+bool OnUnload(pl::mod::ModContext& ctx) {
+    LOGI("TreeCapacitator unloading");
+    SetEnabledState(false);
+    weatherhooks::Uninstall();
+    pl::modmenu::unregisterModule(kModuleId);
+    treecap::api::Shutdown();
+    return true;
+}
+
+void SetEnabledState(bool on) {
+    const bool was = g_enabled.exchange(on);
+    if (on == was) return;
+
+    if (on) {
+        g_simRunning.store(true);
+        g_simThread = std::thread(SimLoop);
     } else {
-        LOGE("Failed to find Level::tick pattern");
+        g_simRunning.store(false);
+        if (g_simThread.joinable()) g_simThread.join();
     }
-
-    // Pattern for BlockSource::setBlock
-    const char* setBlockPattern = "\xFD\x7B\xBF\xA9\xFD\x03\x00\x91\xF4\x03\x00\xAA\xE0\x03\x1F\xAA";
-    const char* setBlockMask    = "xxxxxxxxxxxxxxxx";
-
-    uintptr_t setBlockAddr = Scanner::FindPattern(modInfo.base, modInfo.size, setBlockPattern, setBlockMask);
-    if (setBlockAddr) {
-        LOGI("Found BlockSource::setBlock at 0x%lx", setBlockAddr);
-        hook_arm64((void*)setBlockAddr, (void*)Hook_SetBlock, (void**)&orig_SetBlock);
-    } else {
-        LOGE("Failed to find BlockSource::setBlock pattern");
-    }
-
-    TreeCapacitor::Init();
-    LOGI("TreeCapacitor initialization complete");
-    return JNI_VERSION_1_6;
+    hud::MarkDirty();
 }
+
+} // namespace
+
+// ───────────────────────────────────────────────────────────────────────────
+// Preloader registration
+// ───────────────────────────────────────────────────────────────────────────
+class TreeCapacitatorMod {
+public:
+    static TreeCapacitatorMod& instance() {
+        static TreeCapacitatorMod mod;
+        return mod;
+    }
+
+    bool load(pl::mod::ModContext& context) { return OnLoad(context); }
+    bool enable(pl::mod::ModContext& context) { return OnEnable(context); }
+    bool disable(pl::mod::ModContext& context) { return OnDisable(context); }
+    bool unload(pl::mod::ModContext& context) { return OnUnload(context); }
+};
+
+PL_REGISTER_MOD(TreeCapacitatorMod, TreeCapacitatorMod::instance())
