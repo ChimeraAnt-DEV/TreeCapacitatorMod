@@ -1,7 +1,8 @@
 # TreeCapacitator
 
 A native `.so` mod for [LeviLauncher (LeviLaunchroid)](https://github.com/LiteLDev/LeviLaunchroid)
-that adds a **tree capacitor network** to Minecraft Bedrock Edition.
+that adds a **tree capacitor network** plus a **real tree feller** to
+Minecraft Bedrock Edition.
 
 ## How it works
 
@@ -31,7 +32,36 @@ This means the mod **loads and runs on any MC version**; game-binary state
 * Mod Menu module with live HUD overlay (nodes, charge %, pulses delivered,
   weather source)
 * Toggle via keybind (Android key `T`, keycode 48) or the Mod Menu
-* Runtime tunables: rain rate, thunder rate, discharge leak
+* Runtime tunables: rain rate, thunder rate, discharge leak, tree feller
+  toggle and per-tree block cap
+
+### Tree feller
+
+Break the bottom log of any tree with any axe and the **whole tree** falls:
+the connected log column, side branches, canopy leaves and mangrove prop
+roots are collected with a flood-fill (capped at 256 blocks by default) and
+destroyed through the game's own `GameMode::destroyBlock`, so drops, sound
+and block effects behave exactly like a normal break.
+
+The feller hooks `GameMode::destroyBlock` and reads block names via
+`BlockSource::getBlock` + `Block::fullName()`, using community-verified
+byte signatures (same ones BedrockTools uses). If a future Minecraft build
+moves those functions, the hooks silently don't install and the capacitor
+part keeps working.
+
+## Tests
+
+CI compiles the production `tree_feller.cpp` against host stubs and runs a
+simulation of the felling flow:
+
+```bash
+g++ -std=gnu++20 -O1 -DFELLER_TEST_HOOKS -Isrc -Itests/stubs \
+    tests/tree_feller_sim.cpp src/tree_feller.cpp \
+    tests/stubs/pl/memory/Hook.cpp tests/stubs/log_impl.cpp \
+    -pthread -o /tmp/feller_sim && /tmp/feller_sim
+```
+
+Expect `FELLER SIM OK`.
 
 ## Build
 

@@ -11,6 +11,7 @@
 // libpreloader.so but does not bundle it).
 
 #include "tree_capacitor.h"
+#include "tree_feller.h"
 #include "weather_hooks.h"
 #include "hud.h"
 
@@ -85,9 +86,9 @@ void SimLoop() {
 // ───────────────────────────────────────────────────────────────────────────
 pl::modmenu::ModuleBuilder MakeModuleBuilder() {
     auto builder = pl::modmenu::ModuleBuilder(kModuleId, "TreeCapacitator")
-                       .description("Tree capacitor network: rain and thunder "
-                                    "charge capacitor roots that release growth "
-                                    "pulses into nearby trees.")
+                       .description("Chop entire trees with one swing, and "
+                                    "tree capacitors charge during rain and "
+                                    "release growth pulses nearby.")
                        .modId(kModuleId);
 
     builder.config("rain_rate", "Rain charge rate",
@@ -101,6 +102,10 @@ pl::modmenu::ModuleBuilder MakeModuleBuilder() {
     builder.config("leak_rate", "Discharge leak",
                    pl::modmenu::ConfigType::SliderInt,
                    std::to_string(treecap::kLeakRate), "0", "50");
+    builder.config("fell_enabled", "Tree feller (chop whole trees)",
+                   pl::modmenu::ConfigType::Toggle, "1", "0", "1");
+    builder.config("fell_max", "Max logs per felled tree",
+                   pl::modmenu::ConfigType::SliderInt, "256", "1", "512");
 
     builder.onToggle([](std::string_view moduleId, bool enabled) {
         if (moduleId == kModuleId) {
@@ -119,6 +124,8 @@ pl::modmenu::ModuleBuilder MakeModuleBuilder() {
         if (key == "rain_rate") treecap::api::SetRainRate(v);
         else if (key == "thunder_rate") treecap::api::SetThunderRate(v);
         else if (key == "leak_rate") treecap::api::SetLeakRate(v);
+        else if (key == "fell_enabled") feller::SetEnabled(v != 0);
+        else if (key == "fell_max") feller::SetMaxLogs(v);
     });
 
     return builder;
@@ -168,6 +175,13 @@ bool OnEnable(pl::mod::ModContext& ctx) {
     if (!g_hooksInstalled.load()) {
         LOGI("Weather signatures not found — using built-in storm simulator");
     }
+
+    // Tree feller: chop whole trees when you break the bottom log. If the
+    // GameMode::destroyBlock signature is missing on this build, the feller
+    // silently stays dormant and the capacitor part still works.
+    const bool fellerOk = feller::Install();
+    LOGI("TreeFeller %s", fellerOk ? "enabled" : "unavailable on this build");
+    feller::SetEnabled(fellerOk);
     return true;
 }
 
@@ -178,6 +192,7 @@ bool OnDisable(pl::mod::ModContext& ctx) {
         weatherhooks::Uninstall();
         treecap::api::SetWeather(treecap::WeatherState::Clear, false);
     }
+    feller::SetEnabled(false);
     return true;
 }
 
@@ -185,6 +200,7 @@ bool OnUnload(pl::mod::ModContext& ctx) {
     LOGI("TreeCapacitator unloading");
     SetEnabledState(false);
     weatherhooks::Uninstall();
+    feller::Uninstall();
     pl::modmenu::unregisterModule(kModuleId);
     treecap::api::Shutdown();
     return true;

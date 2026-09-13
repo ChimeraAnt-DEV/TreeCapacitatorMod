@@ -17,6 +17,7 @@ endif()
 add_library(tree_capacitor SHARED
     src/Main.cpp
     src/tree_capacitor.cpp
+    src/tree_feller.cpp
     src/weather_hooks.cpp
     src/hud.cpp
 )
