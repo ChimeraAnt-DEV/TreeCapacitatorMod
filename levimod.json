@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "treecapacitator",
+  "version": "1.0.0",
+  "minecraft_versions": [
+    "1.26.33.1"
+  ],
+  "info": {
+    "name": "TreeCapacitator",
+    "author": "ChimeraAnt-DEV",
+    "description": "Tree capacitor network: rain and thunder charge capacitor roots that release growth pulses into nearby trees.",
+    "icon": "assets/icon.png",
+    "tags": [
+      "Gameplay",
+      "Utility"
+    ]
+  },
+  "release_assets": {
+    "include": [
+      "*.levipack",
+      "*.so"
+    ],
+    "labels": {
+      "TreeCapacitator.levipack": "LeviPack",
+      "libtree_capacitor.so": "Native library"
+    }
+  }
+}
