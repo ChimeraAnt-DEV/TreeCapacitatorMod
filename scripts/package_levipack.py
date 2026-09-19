@@ -15,10 +15,11 @@ from pathlib import Path
 MOD_ID = "treecapacitator"
 MOD_NAME = "TreeCapacitator"
 MOD_AUTHOR = "ChimeraAnt-DEV"
-MOD_VERSION = "1.0.0"
+MOD_VERSION = "1.1.0"
 MOD_DESCRIPTION = (
-    "Tree capacitor network: rain and thunder charge capacitor roots that "
-    "release growth pulses into nearby trees."
+    "Tree capacitor network plus a real tree feller: rain and thunder charge "
+    "capacitor roots that release growth pulses into nearby trees, and breaking "
+    "one log fells the whole tree. Works across Minecraft Bedrock 1.26+ builds."
 )
 ENTRY = "libtree_capacitor.so"
 
@@ -27,13 +28,23 @@ def build_manifest() -> dict:
     return {
         "schema_version": 1,
         "id": MOD_ID,
+        # `name`, `author`, `version`, `description`, `icon` and
+        # `minecraft_versions` are the fields LeviLaunchroid's ModManager reads
+        # out of this file (parseDirectoryMod / parseMinecraftVersions). They
+        # must stay top-level: the nested "info" object used by levimod.json is
+        # ignored by the launcher, which would leave the mod looking like it
+        # has no compatibility metadata at all.
         "name": MOD_NAME,
         "author": MOD_AUTHOR,
         "version": MOD_VERSION,
         "description": MOD_DESCRIPTION,
         "type": "preload-native",
         "entry": ENTRY,
-        "minecraft_versions": ["1.26.33.1"],
+        # Empty = compatible with every Minecraft version. The mod resolves
+        # its game hooks at runtime and falls back to the storm simulator when
+        # a build is unknown, so claiming a specific version would only make
+        # the launcher hide it from builds it actually works on.
+        "minecraft_versions": [],
         "icon": "icon.png",
     }
 

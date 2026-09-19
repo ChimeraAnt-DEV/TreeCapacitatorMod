@@ -1,14 +1,12 @@
 {
   "schema_version": 1,
   "id": "treecapacitator",
-  "version": "1.0.0",
-  "minecraft_versions": [
-    "1.26.33.1"
-  ],
+  "version": "1.1.0",
+  "minecraft_versions": [],
   "info": {
     "name": "TreeCapacitator",
     "author": "ChimeraAnt-DEV",
-    "description": "Tree capacitor network: rain and thunder charge capacitor roots that release growth pulses into nearby trees.",
+    "description": "Tree capacitor network plus a real tree feller: rain and thunder charge capacitor roots that release growth pulses into nearby trees, and breaking one log fells the whole tree. Works across Minecraft Bedrock 1.26+ builds.",
     "icon": "assets/icon.png",
     "tags": [
       "Gameplay",

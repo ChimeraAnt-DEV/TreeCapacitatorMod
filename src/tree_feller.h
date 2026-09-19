@@ -1,23 +1,28 @@
 #pragma once
 
-// Tree Feller — real in-game tree chopping for LeviLaunchroid / MC 1.26.33.1.
+#include <cstddef>
+
+// Tree Feller — real in-game tree chopping for LeviLaunchroid / MC 1.26+.
 //
 // When you break the lowest log block of a standing tree (any axe), instead of
-// only that block the whole log column plus the canopies attached to it fall.
+// only that block the whole log column plus the canopy attached to it fall.
 //
 // Implementation approach (fully compatible with LeviLaunchroid's pl:: ABI):
-//   * resolve GameMode::destroyBlock + BlockSource::getBlock via the same
-//     community-verified byte signatures used by BedrockTools;
+//   * resolve GameMode::destroyBlock + BlockSource::getBlock in two tiers:
+//       tier 1 — version-keyed byte signatures, fastest on known builds;
+//       tier 2 — pl::memory::resolveVtableFunction() RTTI lookup, which is
+//                independent of the Minecraft build number;
 //   * hook GameMode::destroyBlock so every block that actually gets destroyed
 //     is chased:
-//       1. if the destroyed block is a log (log / stripped_log / wood / stem),
-//          walk the log column upward, also collecting any canopy located
-//          directly above the topmost log — so the tree falls entirely;
+//       1. if the destroyed block is a log (log / stripped_log / wood / stem /
+//          hyphae, all tree species), flood-fill the connected logs to find the
+//          trunk, then collect the canopy sitting on it — leaves never
+//          propagate, so adjacent trees are not felled together;
 //       2. re-destroy every discovered block through the game's own
 //          destroyBlock so drops, block entities and sounds behave exactly
 //          like the vanilla break;
-//   * if a signature is missing on some build, the module stays dormant and
-//     the tree capacitor still works on its simulation side.
+//   * if both tiers miss (an unknown future build whose class layout changed
+//     too), the module stays dormant and the capacitor still works.
 
 namespace feller {
 
@@ -47,6 +52,10 @@ using DestroyBlockFn = bool (*)(void*, void*, const void*, _feller_u8);
 void SetGetBlockPtr(GetBlockFn fn);
 void SetDestroyBlockPtr(DestroyBlockFn fn);
 bool CallDestroyDetour(void* self, void* region, const void* pos, _feller_u8 face);
+// Exposes the vtable slot constants so a test can assert they still match the
+// compiler's own Itanium slot ordering.
+std::size_t GameModeDestroyBlockSlot();
+std::size_t BlockSourceGetBlockSlot();
 } // namespace testhooks
 #endif
 
