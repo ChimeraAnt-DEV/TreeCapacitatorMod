@@ -1,4 +1,4 @@
-name: Build TreeCapacitor (MC 1.26.33.1)
+name: Build TreeCapacitor (MC 1.26+)
 
 on:
   push:
@@ -17,7 +17,8 @@ jobs:
           echo "Compiling host-side tree feller simulation..."
           g++ -std=gnu++20 -O1 -DFELLER_TEST_HOOKS -Isrc -Itests/stubs \
               tests/tree_feller_sim.cpp src/tree_feller.cpp \
-              tests/stubs/pl/memory/Hook.cpp tests/stubs/log_impl.cpp \
+              tests/stubs/pl/memory/Hook.cpp tests/stubs/pl/memory/Vtable.cpp \
+              tests/stubs/log_impl.cpp \
               -pthread -o /tmp/feller_sim
           /tmp/feller_sim
 
@@ -50,7 +51,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TreeCapacitator-mc1.26.33.1-arm64
+          name: TreeCapacitator-mc1.26plus-arm64
           path: |
             TreeCapacitator.levipack
             build/libtree_capacitor.so

@@ -16,7 +16,9 @@
 #include <pl/ModMenu.hpp>
 #include <pl/memory/Hook.hpp>
 #include <pl/memory/Signature.hpp>
+#include <pl/memory/Vtable.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <span>
@@ -43,6 +45,12 @@ bool unhook(FuncPtr target, FuncPtr detour) {
 
 std::uintptr_t resolveSignature(std::string_view signature,
                                 std::string_view moduleName) {
+    return 0;
+}
+
+std::uintptr_t resolveVtableFunction(std::string_view typeInfoName,
+                                     std::size_t slot,
+                                     std::string_view moduleName) {
     return 0;
 }
 

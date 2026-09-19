@@ -4,6 +4,27 @@ A native `.so` mod for [LeviLauncher (LeviLaunchroid)](https://github.com/LiteLD
 that adds a **tree capacitor network** plus a **real tree feller** to
 Minecraft Bedrock Edition.
 
+The mod targets Minecraft Bedrock **1.26 and newer**, and also runs on the
+Android LeviLamina API extension
+[ApexAntLamina](https://github.com/ChimeraAnt-DEV/ApexAntLamina) — both ship the
+same `libpreloader.so` (`pl::`) runtime, which is the only API this mod uses.
+
+## Minecraft version compatibility
+
+The mod is built so that one `.levipack` covers every 1.26+ build instead of
+being pinned to a single version:
+
+* `minecraft_versions` in `manifest.json` is left **empty**, which the
+  launcher treats as "compatible with every version". An empty list is used
+  rather than a list of wildcards because the feller validates its targets at
+  runtime and degrades gracefully, so naming a ceiling would only hide the mod
+  from builds it actually works on.
+* Game functions are resolved in **two tiers**: a version-keyed byte signature
+  first (fast on the builds it was recorded from), then an RTTI/vtable lookup
+  via `pl::memory::resolveVtableFunction()` (independent of the build number).
+* Anything that still cannot be resolved leaves that subsystem dormant without
+  affecting the rest of the mod.
+
 ## How it works
 
 Capacitor roots are spread on a virtual grid around the world origin. During
@@ -37,16 +58,36 @@ This means the mod **loads and runs on any MC version**; game-binary state
 
 ### Tree feller
 
-Break the bottom log of any tree with any axe and the **whole tree** falls:
-the connected log column, side branches, canopy leaves and mangrove prop
-roots are collected with a flood-fill (capped at 256 blocks by default) and
-destroyed through the game's own `GameMode::destroyBlock`, so drops, sound
+Yes — the mod is a tree feller. Break the bottom log of any tree with any axe
+and the **whole tree** falls: the connected log column, side branches and the
+canopy leaves are collected with a flood-fill (capped at 256 blocks by default)
+and destroyed through the game's own `GameMode::destroyBlock`, so drops, sound
 and block effects behave exactly like a normal break.
 
+Two details worth knowing:
+
+* Only **logs** propagate the search. Leaves are collected but never traversed,
+  so two trees whose canopies touch are felled separately. Earlier revisions let
+  the flood-fill walk through leaves, which felled a whole grove at once.
+* All 1.26 tree species are recognised — oak, spruce, birch, jungle, acacia,
+  dark oak, mangrove, cherry, pale oak, bamboo and the nether stems/hyphae — in
+  natural, stripped and `wood` forms.
+
 The feller hooks `GameMode::destroyBlock` and reads block names via
-`BlockSource::getBlock` + `Block::fullName()`, using community-verified
-byte signatures (same ones BedrockTools uses). If a future Minecraft build
-moves those functions, the hooks silently don't install and the capacitor
+`BlockSource::getBlock` + `Block::BlockType::NameInfo`.
+
+The block/name offsets are the one genuinely version-sensitive part, and they
+cannot be read off the headers: the ApexAntLamina `Block`/`BlockType` headers are
+generated for the Win64 ABI, where `std::string` is 32 bytes, while Android uses
+libc++ (24 bytes), so the two disagree and `BlockComponentStorage` has already
+grown once inside the 1.26 line. Instead of pinning one tuple, `FullNameOf()`
+probes the short list in `kNameLayouts` (in `src/tree_feller.cpp`) and accepts
+the first layout that yields a plausible `[a-z0-9_:]+` block name. A wrong
+offset effectively never produces that shape, so this survives a layout change
+and fails safe — if no layout matches, no name is reported and the feller
+declines to cut rather than destroying the wrong blocks.
+
+If nothing can be resolved, the hooks silently don't install and the capacitor
 part keeps working.
 
 ## Tests
@@ -57,7 +98,8 @@ simulation of the felling flow:
 ```bash
 g++ -std=gnu++20 -O1 -DFELLER_TEST_HOOKS -Isrc -Itests/stubs \
     tests/tree_feller_sim.cpp src/tree_feller.cpp \
-    tests/stubs/pl/memory/Hook.cpp tests/stubs/log_impl.cpp \
+    tests/stubs/pl/memory/Hook.cpp tests/stubs/pl/memory/Vtable.cpp \
+    tests/stubs/log_impl.cpp \
     -pthread -o /tmp/feller_sim && /tmp/feller_sim
 ```
 

@@ -47,7 +47,7 @@ namespace {
 
 constexpr const char* kModuleId = "treecapacitator";
 constexpr const char* kModAuthor = "ChimeraAnt-DEV";
-constexpr const char* kModVersion = "1.0.0";
+constexpr const char* kModVersion = "1.1.0";
 
 std::atomic<bool> g_enabled{false};
 std::atomic<bool> g_hooksInstalled{false};
@@ -176,8 +176,9 @@ bool OnEnable(pl::mod::ModContext& ctx) {
         LOGI("Weather signatures not found — using built-in storm simulator");
     }
 
-    // Tree feller: chop whole trees when you break the bottom log. If the
-    // GameMode::destroyBlock signature is missing on this build, the feller
+    // Tree feller: chop whole trees when you break the bottom log. The hook
+    // target is resolved by byte signature first and by RTTI/vtable lookup
+    // second, so it works across 1.26+ builds. If both miss, the feller
     // silently stays dormant and the capacitor part still works.
     const bool fellerOk = feller::Install();
     LOGI("TreeFeller %s", fellerOk ? "enabled" : "unavailable on this build");
